@@ -232,6 +232,9 @@ window.__ModuleLoader__.load({
       errMissingMethod: '额度服务已挂载，但没有 {v} 方法。',
       formLabelProviders: '额外供应商',
       formHintProviders: '补充或覆盖自动发现的供应商。留空时看板直接用 profile 里已配置的那些；要看新网关的余额，就在这里加一条。',
+      formLabelDefaultProvider: '默认展示供应商',
+      formHintDefaultProvider: '侧栏底部按钮显示这一家的名字与额度。选「自动」时优先用模型配置里的默认供应商。',
+      formDefaultProviderAuto: '自动（跟随默认供应商）',
       formProviderAdd: '添加供应商',
       formProviderRemove: '删除',
       formProviderUntitled: '未命名供应商',
@@ -403,6 +406,9 @@ window.__ModuleLoader__.load({
       errMissingMethod: 'the service mounted, but it has no {v} method.',
       formLabelProviders: 'Extra providers',
       formHintProviders: 'Adds to or overrides discovered providers. Leave it empty to just use whatever the profile already declares; add a row here to see a gateway the profile never mentions.',
+      formLabelDefaultProvider: 'Default provider',
+      formHintDefaultProvider: 'The sidebar button prints this provider\'s name and remaining quota. On "Auto", the profile\'s default provider is used.',
+      formDefaultProviderAuto: 'Auto (follow the default provider)',
       formProviderAdd: 'Add provider',
       formProviderRemove: 'Remove',
       formProviderUntitled: 'Untitled provider',
@@ -548,13 +554,22 @@ window.__ModuleLoader__.load({
       return format(t('resetDays'), { n: Math.round(hours / 24) })
     }
 
+    /**
+     * DeepSeek's own blue — the whale blue from the brand mark.
+     *
+     * The theme's `success` token is green, which reads as somebody else's brand
+     * on a DeepSeek surface: a healthy, available window is DeepSeek blue here,
+     * and only the warning states keep their amber/red.
+     */
+    const DS_BLUE = '#4d6bfe'
+
     /** The state colour of a bar, from what is left. */
     function levelColor(remainingPercent) {
       const value = Number(remainingPercent)
-      if (!Number.isFinite(value)) return 'var(--dsw-alias-state-success-primary)'
+      if (!Number.isFinite(value)) return DS_BLUE
       if (value <= 10) return 'var(--dsw-alias-state-error-primary)'
       if (value <= 30) return 'var(--dsw-alias-state-warn-primary)'
-      return 'var(--dsw-alias-state-success-primary)'
+      return DS_BLUE
     }
 
     // -----------------------------------------------------------------------
@@ -568,7 +583,11 @@ window.__ModuleLoader__.load({
 .dqb_seatBtn{display:flex;align-items:center;gap:7px;width:100%;min-width:0;height:30px;padding:0 8px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;line-height:1;cursor:pointer;text-align:left}
 .dqb_seatBtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .dqb_seatBtn[aria-expanded="true"]{background:var(--dsw-alias-fill-l2);color:var(--dsw-alias-label-primary)}
-.dqb_seatLabel{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dqb_seatLabel{flex:1;min-width:0;display:flex;align-items:baseline;gap:6px;overflow:hidden}
+.dqb_seatName{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* The number is the reason the seat exists, so it never gets ellipsized: the
+   name gives way first. */
+.dqb_seatQuota{flex:none;font-size:11.5px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}
 .dqb_seatCaret{flex:none;font-size:9px;line-height:1;color:var(--dsw-alias-label-tertiary)}
 /* The popover is portaled to <body>: fixed would otherwise resolve against the
    sidebar's transformed ancestor and be clipped by its overflow. */
@@ -630,7 +649,11 @@ window.__ModuleLoader__.load({
 .dqb_bar{height:6px;border-radius:999px;background:var(--dsw-alias-fill-l2);overflow:hidden;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--dsw-alias-border-l1) 60%,transparent)}
 .dqb_barFill{height:100%;border-radius:999px;transition:width .2s ease}
 .dqb_planMeta{display:flex;justify-content:space-between;gap:8px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.dqb_planMeta>span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dqb_meta{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary);border-top:1px solid var(--dsw-alias-border-l1);padding-top:8px;margin-top:auto}
+/* One fact per line, and a line is never broken mid-word: Chinese has no spaces,
+   so a shrinking span used to stack one character per line ("本机用/量"). */
+.dqb_meta>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dqb_meta b{font-weight:500;color:var(--dsw-alias-label-secondary)}
 .dqb_note{font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary)}
 .dqb_err{font-size:12px;line-height:18px;color:var(--dsw-alias-state-error-primary);word-break:break-word}
@@ -639,8 +662,10 @@ window.__ModuleLoader__.load({
 .dqb_emptyTitle{font-size:14px;font-weight:500}
 .dqb_emptyText{font-size:12.5px;line-height:20px;color:var(--dsw-alias-label-secondary);margin:0}
 .dqb_sectionHead{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-top:4px}
-.dqb_sectionTitle{font-size:14px;font-weight:600}
-.dqb_sectionHint{font-size:11.5px;color:var(--dsw-alias-label-tertiary)}
+/* The hint gives way, not the title: a flex item may shrink to one character,
+   which turned "本机用量" into a vertical stack instead of a heading. */
+.dqb_sectionTitle{font-size:14px;font-weight:600;flex:none;white-space:nowrap}
+.dqb_sectionHint{font-size:11.5px;color:var(--dsw-alias-label-tertiary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}
 .dqb_usageGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;align-items:stretch}
 .dqb_stack{display:flex;height:10px;border-radius:999px;overflow:hidden;background:var(--dsw-alias-fill-l2)}
 .dqb_legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:11.5px;color:var(--dsw-alias-label-secondary);margin-top:8px}
@@ -660,7 +685,7 @@ window.__ModuleLoader__.load({
 .dqb_rowGrid .dqb_rowLabel{font-size:11px;color:var(--dsw-alias-label-tertiary);max-width:100%}
 .dqb_rowGrid .dqb_rowValue{font-size:13.5px;font-weight:500;line-height:19px}
 .dqb_rowLabel{color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dqb_rowValue{font-variant-numeric:tabular-nums;flex:none}
+.dqb_rowValue{font-variant-numeric:tabular-nums;flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dqb_rowValueNeg{color:var(--dsw-alias-state-error-primary)}
 .dqb_modelRow{display:flex;flex-direction:column;gap:4px;margin-bottom:7px}
 .dqb_chart{display:flex;align-items:flex-end;gap:4px;height:96px;padding-top:4px}
@@ -1015,6 +1040,47 @@ window.__ModuleLoader__.load({
         h('span', { className: 'dqb_stateTitle', key: 't' }, t('stateTitle')),
         h('p', { className: 'dqb_stateText', key: 'x' }, text),
       ])
+    }
+
+    /**
+     * The provider the sidebar seat speaks for.
+     *
+     * `preferred` is the id chosen in settings. When it is empty — or names a
+     * provider the report no longer has, which happens after renaming one — the
+     * profile's own default wins, then the first configured provider. An empty
+     * report simply yields null and the button falls back to its own name.
+     */
+    function seatProvider(providers, preferred) {
+      const list = Array.isArray(providers) ? providers : []
+      const id = String(preferred ?? '').trim()
+      if (id.length > 0) {
+        const named = list.find((provider) => String(provider?.id ?? '') === id)
+        if (named !== undefined) return named
+      }
+      return (
+        list.find((provider) => provider?.isDefault === true && provider?.configured !== false) ??
+        list.find((provider) => provider?.configured === true && provider?.error == null) ??
+        list.find((provider) => provider?.configured === true) ??
+        list[0] ??
+        null
+      )
+    }
+
+    /**
+     * The two things the seat prints: who, and how much is left.
+     *
+     * The number is the same one the card's headline shows, so the button can
+     * never disagree with the popover it opens.
+     */
+    function seatSummary(provider, t) {
+      if (provider === null || provider === undefined) return null
+      const head = headline(provider, t)
+      const unit = String(head.unit ?? '')
+      const quota =
+        head.value === '—' ? '' : `${head.value}${unit === '%' ? '%' : unit.length > 0 ? ` ${unit}` : ''}`
+      // Only a quota window has a "how full" colour; money keeps the muted tone.
+      const color = head.plan !== null && head.plan.unit === '%' ? levelColor(Number(head.value)) : null
+      return { name: String(provider.displayName ?? provider.id ?? ''), quota, color }
     }
 
     /** One provider card. */
@@ -1525,31 +1591,34 @@ window.__ModuleLoader__.load({
       const panelRef = React.useRef(null)
       const alive = React.useRef(true)
       const seenReport = React.useRef(false)
+      // `props` is a fresh object every render, so a callback that closed over it
+      // would change identity each time — and the polling effect below would
+      // restart on every render, refetching in a loop. The loader is read through
+      // a ref instead, keeping `refresh` stable for the life of the seat.
+      const loadRef = React.useRef(props.load)
+      loadRef.current = props.load
 
-      const refresh = React.useCallback(
-        (force) => {
-          setBusy(true)
-          return Promise.resolve()
-            .then(() => props.load(force === true))
-            .then((result) => {
-              if (!alive.current) return
-              if (result.ok === true) {
-                seenReport.current = true
-                setReport(result.data)
-                setFailure(null)
-              } else {
-                setFailure(result)
-              }
-            })
-            .catch((error) => {
-              if (alive.current) setFailure({ reason: String(error?.message ?? error) })
-            })
-            .then(() => {
-              if (alive.current) setBusy(false)
-            })
-        },
-        [props],
-      )
+      const refresh = React.useCallback((force) => {
+        setBusy(true)
+        return Promise.resolve()
+          .then(() => loadRef.current(force === true))
+          .then((result) => {
+            if (!alive.current) return
+            if (result.ok === true) {
+              seenReport.current = true
+              setReport(result.data)
+              setFailure(null)
+            } else {
+              setFailure(result)
+            }
+          })
+          .catch((error) => {
+            if (alive.current) setFailure({ reason: String(error?.message ?? error) })
+          })
+          .then(() => {
+            if (alive.current) setBusy(false)
+          })
+      }, [])
 
       React.useEffect(() => {
         alive.current = true
@@ -1557,6 +1626,13 @@ window.__ModuleLoader__.load({
           alive.current = false
         }
       }, [])
+
+      // One quiet read on mount: the button has to say a name and a number
+      // before it is ever opened. The Host caches for 20s, so this is close to
+      // free, and it is the only fetch that happens while the panel is closed.
+      React.useEffect(() => {
+        refresh(false)
+      }, [refresh])
 
       // Fetch on open, then keep it fresh only while it is visible.
       React.useEffect(() => {
@@ -1608,6 +1684,10 @@ window.__ModuleLoader__.load({
         }
       }, [open])
 
+      const summary = seatSummary(seatProvider(report?.providers, report?.defaultProvider), t)
+      const label = summary === null ? t('panel') : summary.name
+      const titleText = summary === null || summary.quota.length === 0 ? label : `${label} · ${summary.quota}`
+
       const button = h(
         'button',
         {
@@ -1615,13 +1695,28 @@ window.__ModuleLoader__.load({
           className: 'dqb_seatBtn',
           'aria-haspopup': 'dialog',
           'aria-expanded': open,
-          'aria-label': t('panel'),
-          title: t('panel'),
+          'aria-label': titleText,
+          title: titleText,
           onClick: () => setOpen((value) => !value),
         },
         [
           h(BoardIcon, { key: 'icon', size: wide ? 16 : 18, active: open }),
-          wide ? h('span', { className: 'dqb_seatLabel', key: 'label' }, t('panel')) : null,
+          wide
+            ? h('span', { className: 'dqb_seatLabel', key: 'label' }, [
+                h('span', { className: 'dqb_seatName', key: 'n' }, label),
+                summary !== null && summary.quota.length > 0
+                  ? h(
+                      'span',
+                      {
+                        className: 'dqb_seatQuota',
+                        key: 'q',
+                        style: summary.color === null ? undefined : { color: summary.color },
+                      },
+                      summary.quota,
+                    )
+                  : null,
+              ])
+            : null,
           wide ? h('span', { className: 'dqb_seatCaret', key: 'caret', 'aria-hidden': 'true' }, open ? '▾' : '▸') : null,
         ],
       )
@@ -1695,7 +1790,7 @@ window.__ModuleLoader__.load({
 
     /** The one structured list; every other control is a scalar text field. */
     const LIST_FIELDS = ['providers']
-    const TEXT_FIELDS = ['deepseekBaseURL', 'skipHosts']
+    const TEXT_FIELDS = ['defaultProvider', 'deepseekBaseURL', 'skipHosts']
     const NUMBER_FIELDS = ['lowThreshold', 'refreshSeconds', 'usageDays', 'timeoutMs']
     const VALUE_FIELDS = [...LIST_FIELDS, ...TEXT_FIELDS, ...NUMBER_FIELDS]
 
@@ -1789,6 +1884,7 @@ window.__ModuleLoader__.load({
 
     const LABEL_OF = {
       providers: 'formLabelProviders',
+      defaultProvider: 'formLabelDefaultProvider',
       deepseekBaseURL: 'formLabelDeepseekBaseURL',
       skipHosts: 'formLabelSkipHosts',
       lowThreshold: 'formLabelLowThreshold',
@@ -1799,6 +1895,7 @@ window.__ModuleLoader__.load({
 
     const HINT_OF = {
       providers: 'formHintProviders',
+      defaultProvider: 'formHintDefaultProvider',
       deepseekBaseURL: 'formHintDeepseekBaseURL',
       skipHosts: 'formHintSkipHosts',
       lowThreshold: 'formHintLowThreshold',
@@ -1826,6 +1923,7 @@ window.__ModuleLoader__.load({
         this.ctx = ctx
         this.form = new UI.SettingsFormModel(scope, SPECS, [])
         this.peers = null
+        this.allProviders = null
         this.store = this.form.bind(() => this.projection())
       }
 
@@ -1836,20 +1934,30 @@ window.__ModuleLoader__.load({
       }
 
       /**
+       * Every provider the board can see, DeepSeek included.
+       *
+       * The dashboard response is cached for 20s in the Host, so opening the
+       * settings page right after looking at the popover costs no requests.
+       */
+      async loadAllProviders() {
+        if (this.allProviders !== null) return this.allProviders
+        const answer = await loadBoard(this.ctx, false)
+        const list = answer?.ok === true && Array.isArray(answer.data?.providers) ? answer.data.providers : []
+        this.allProviders = list
+        return this.allProviders
+      }
+
+      /**
        * Providers the profile already declares, minus DeepSeek.
        *
        * DeepSeek is the one built-in: it is the Harness' own provider and its
        * balance comes from `/user/balance` with `DEEPSEEK_API_KEY`. Everything
        * else — including Volcengine — is "extra", so it is listed here and can
        * be overridden entry by entry.
-       *
-       * The board is cached for 20s in the Host, so opening the settings page
-       * right after looking at the dashboard costs no requests.
        */
       async loadPeers() {
         if (this.peers !== null) return this.peers
-        const answer = await loadBoard(this.ctx, false)
-        const list = answer?.ok === true && Array.isArray(answer.data?.providers) ? answer.data.providers : []
+        const list = await this.loadAllProviders()
         this.peers = list.filter((provider) => provider.adapter !== 'deepseek')
         return this.peers
       }
@@ -1881,6 +1989,7 @@ window.__ModuleLoader__.load({
         return {
           hooks: { quotaBoardConfig: this.store },
           peers: () => this.loadPeers(),
+          providers: () => this.loadAllProviders(),
           writeCredential: (ref, value) => this.writeCredential(ref, value),
           testProvider: (entry) => this.testProvider(entry),
           ...this.form.actions(),
@@ -2481,18 +2590,73 @@ window.__ModuleLoader__.load({
       ])
     }
 
+    /**
+     * The `defaultProvider` control: a dropdown of everything the board knows
+     * about, so the choice is a name rather than an id someone has to spell.
+     *
+     * Discovered providers come from the report; configured-but-undiscovered
+     * extra rows are merged in, since a gateway added by hand is exactly the one
+     * that has no discovery entry.
+     */
+    function defaultProviderField(props, state, providers) {
+      const entry = state.defaultProvider ?? { text: '', overridden: false, resetable: false }
+      const current = typeof entry.text === 'string' ? entry.text.trim() : ''
+      const disabled = state.writable !== true
+      const choices = []
+      const seen = new Set()
+      const add = (id, label) => {
+        const clean = String(id ?? '').trim()
+        if (clean.length === 0 || seen.has(clean)) return
+        seen.add(clean)
+        choices.push({ id: clean, label: String(label ?? clean) })
+      }
+      for (const provider of Array.isArray(providers) ? providers : []) add(provider.id, provider.displayName ?? provider.id)
+      let rows = []
+      try {
+        const parsed = JSON.parse(typeof state.providers?.text === 'string' ? state.providers.text : '[]')
+        if (Array.isArray(parsed)) rows = parsed
+      } catch {
+        rows = []
+      }
+      for (const row of rows) add(row?.id, row?.displayName ?? row?.id)
+
+      return h('div', { className: 'dqb_pfield', key: 'defaultProvider', id: `plugin-config-${ROW_ID}-defaultProvider` }, [
+        h('div', { className: 'dqb_pfieldHead', key: 'head' }, [
+          h('label', { className: 'dqb_plabel', key: 'label', htmlFor: `plugin-config-${ROW_ID}-defaultProvider-input` }, props.t('formLabelDefaultProvider')),
+          entry.overridden === true ? h('span', { className: 'dqb_pover', key: 'over' }, props.t('formOverridden')) : null,
+        ]),
+        h(
+          'select',
+          {
+            id: `plugin-config-${ROW_ID}-defaultProvider-input`,
+            className: 'dqb_pselect',
+            value: current,
+            disabled,
+            onChange: (event) => props.edit('defaultProvider', String(event?.target?.value ?? '')),
+          },
+          [
+            h('option', { value: '', key: '__auto' }, props.t('formDefaultProviderAuto')),
+            ...choices.map((choice) => h('option', { value: choice.id, key: choice.id }, choice.label)),
+          ],
+        ),
+        h('p', { className: 'dqb_phint', key: 'hint' }, props.t('formHintDefaultProvider')),
+      ])
+    }
+
     function QuotaBoardConfigCard(props) {
       const state = props.useQuotaBoardConfig((snapshot) => snapshot)
       // The profile's own providers are read once per mount: they tell the list
       // what already exists, so "extra" includes what the profile declared — not
-      // just what the user typed here.
-      const [peers, setPeers] = React.useState([])
+      // just what the user typed here. The unfiltered list also feeds the
+      // "default provider" dropdown, which has to offer DeepSeek too.
+      const [all, setAll] = React.useState([])
       React.useEffect(() => {
         let alive = true
-        if (typeof props.peers !== 'function') return undefined
-        void props.peers().then(
+        const read = typeof props.providers === 'function' ? props.providers : props.peers
+        if (typeof read !== 'function') return undefined
+        void read().then(
           (list) => {
-            if (alive) setPeers(Array.isArray(list) ? list : [])
+            if (alive) setAll(Array.isArray(list) ? list : [])
           },
           () => {},
         )
@@ -2500,6 +2664,7 @@ window.__ModuleLoader__.load({
           alive = false
         }
       }, [])
+      const peers = all.filter((peer) => peer.adapter !== 'deepseek')
 
       if (props.view === 'summary') return props.t('summary')
       return h(
@@ -2517,6 +2682,7 @@ window.__ModuleLoader__.load({
           valueField(props, state, 'timeoutMs', true),
           valueField(props, state, 'deepseekBaseURL', false),
           valueField(props, state, 'skipHosts', false),
+          defaultProviderField(props, state, all),
           providerListField(props, state, peers),
         ],
       )
@@ -2565,7 +2731,10 @@ window.__ModuleLoader__.load({
             id: PANEL_ID,
             order: PANEL_ORDER,
             locale: NS,
-            inject: () => ({ load: (force) => loadBoard(ctx, force), openConfig }),
+            inject: () => ({
+              load: (force) => loadBoard(ctx, force),
+              openConfig,
+            }),
           },
           QuotaBoardSeat,
         ),

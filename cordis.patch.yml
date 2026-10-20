@@ -29,4 +29,7 @@
         usageDays: 14
         timeoutMs: 10000
         deepseekBaseURL: ''
+        # Empty means "follow the profile's default provider"; the settings page
+        # turns this into a dropdown of everything the board can see.
+        defaultProvider: ''
         skipHosts: ''

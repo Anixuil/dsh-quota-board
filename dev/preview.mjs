@@ -377,6 +377,9 @@ const base = {
   writable: true,
   deepseekBaseURL: { text: '', overridden: false },
   skipHosts: { text: '', overridden: false },
+  // Empty means "follow the profile's default provider" — the dropdown's first
+  // option, and what most people will leave it on.
+  defaultProvider: { text: '', overridden: false },
   lowThreshold: { text: '5', overridden: false },
   refreshSeconds: { text: '60', overridden: false },
   usageDays: { text: '14', overridden: false },
@@ -385,9 +388,19 @@ const base = {
 
 /**
  * The Host answers `quotaBoard.load` with one card per provider. Only the
- * non-DeepSeek ones reach this list — DeepSeek is built in.
+ * non-DeepSeek ones reach the "extra providers" list — DeepSeek is built in —
+ * but the default-provider dropdown offers all of them.
  */
 const peers = [
+  {
+    id: 'deepseek-official',
+    displayName: 'DeepSeek',
+    baseURL: 'https://api.deepseek.com',
+    adapter: 'deepseek',
+    keyRef: '',
+    configured: true,
+    binding: null,
+  },
   {
     id: 'ark',
     displayName: '火山方舟',

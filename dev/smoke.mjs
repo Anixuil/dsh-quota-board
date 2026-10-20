@@ -1354,6 +1354,45 @@ check('Escape and an outside click both dismiss the popover', () => {
   react.dispose()
 })
 
+check('the seat names the default provider and prints its remaining quota', () => {
+  const props = { t, load: () => Promise.resolve({ ok: true, data: reportFixture }), openConfig: () => {}, wide: true }
+  // Closed, with the report already in hand — the state one click-through of the
+  // button leaves behind.
+  react.reset([false, reportFixture])
+  const text = textOf(seatComponent(props))
+  assert.match(text, /火山引擎/, 'the button must name the provider, not say "额度看板"')
+  assert.match(text, /58%/, 'the button must carry the remaining quota')
+  assert.equal(text.includes('额度看板'), false, 'the generic label must be gone once there is a report')
+  react.dispose()
+})
+
+check('a configured provider wins, a stale id falls back, no data keeps the title', () => {
+  const report = (extra) => ({ ...reportFixture, ...extra })
+  // Hook order in the seat: open, report, failure, busy, anchor.
+  const mount = (value) => {
+    react.reset([false, value, null, false, null])
+    return textOf(seatComponent({ t, load: () => Promise.resolve({ ok: true, data: value }), openConfig: () => {}, wide: true }))
+  }
+
+  const chosen = mount(report({ defaultProvider: 'deepseek-official' }))
+  assert.match(chosen, /DeepSeek/)
+  assert.match(chosen, /12\.34 CNY/, 'the balance headline is what the seat prints for a wallet')
+
+  // Renaming a provider leaves an id behind: fall back rather than go blank.
+  assert.match(mount(report({ defaultProvider: 'gone' })), /火山引擎/)
+
+  assert.match(mount(null), /额度看板/, 'with nothing loaded the button falls back to the plugin name')
+  react.dispose()
+})
+
+check('a healthy quota bar is DeepSeek blue, not the theme green', () => {
+  const fills = elementsOf(renderPage([reportFixture, null, false])).filter(
+    (element) => element.props?.className === 'dqb_barFill',
+  )
+  assert.ok(fills.length > 0, 'no bars rendered')
+  assert.equal(fills[0].props.style.background, '#4d6bfe', 'the available share must be whale blue')
+})
+
 check('the loading state renders', () => {
   const text = textOf(renderPage([null, null, false]))
   assert.match(text, /正在读取额度/)
@@ -1621,6 +1660,43 @@ function cardProps(state, peers, overrides = {}) {
     ...overrides,
   }
 }
+
+check('the default-provider dropdown offers every provider the board can see', () => {
+  // The unfiltered list is what feeds the dropdown, so DeepSeek has to be in it
+  // even though the "extra providers" list above deliberately hides it.
+  const all = [
+    ...peerFixture,
+    { id: 'deepseek-official', displayName: 'DeepSeek', adapter: 'deepseek', configured: true },
+  ]
+  const edits = []
+  const state = {
+    writable: true,
+    providers: { text: '[]', overridden: false },
+    defaultProvider: { text: 'ark', overridden: true },
+  }
+  react.reset([all])
+  const props = cardProps(state, peerFixture, {
+    providers: () => Promise.resolve(all),
+    edit: (field, text) => edits.push([field, text]),
+  })
+  const tree = configComponent(props)
+  const select = elementsOf(tree).find(
+    (element) => element.type === 'select' && element.props.id === 'plugin-config-quota-board-defaultProvider-input',
+  )
+  assert.ok(select, 'the default-provider dropdown is missing')
+  assert.equal(select.props.value, 'ark', 'the saved id must be selected')
+  const options = elementsOf(select).filter((element) => element.type === 'option')
+  assert.equal(options[0].props.value, '', 'the first option is "auto"')
+  const values = options.map((option) => option.props.value)
+  for (const id of ['ark', 'relay', 'deepseek-official']) {
+    assert.ok(values.includes(id), `${id} must be selectable`)
+  }
+  // A hand-added gateway with no discovery entry is still choosable by id.
+  const words = textOf(tree)
+  assert.match(words, /火山方舟/)
+  select.props.onChange({ target: { value: 'deepseek-official' } })
+  assert.deepEqual(edits, [['defaultProvider', 'deepseek-official']])
+})
 
 check('providers found in the model configuration are listed above the editable list', () => {
   react.reset([peerFixture])

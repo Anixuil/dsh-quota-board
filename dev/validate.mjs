@@ -203,6 +203,14 @@ ok('Config 的每个字段都在 patch 中给出默认值，且与 schema 一致
 Config({ ...pluginRow.config })
 ok('patch 的配置能通过 Config 校验')
 
+// The seat prints whichever provider this names, and reads it off the report —
+// so the Host has to carry it, or the setting silently does nothing.
+assert.ok(
+  /defaultProvider:\s*typeof snapshot\.defaultProvider/u.test(read('index.js')),
+  '看板报告必须带上 defaultProvider，否则侧栏按钮不知道该显示哪一家',
+)
+ok('报告携带 defaultProvider，侧栏按钮才有依据')
+
 // ---------------------------------------------------------------------------
 // 3. Host ↔ client contract
 // ---------------------------------------------------------------------------

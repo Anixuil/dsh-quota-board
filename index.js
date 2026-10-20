@@ -114,6 +114,14 @@ export const Config = z.object({
   /** Override the official DeepSeek base URL when no row declares one. */
   deepseekBaseURL: z.string().default('').volatile(),
   /**
+   * Whose name and quota the sidebar button prints.
+   *
+   * Empty means "decide from the report": the profile's default provider first,
+   * then the first configured one. A stale id falls back the same way instead of
+   * leaving the button blank.
+   */
+  defaultProvider: z.string().default('').volatile(),
+  /**
    * Extra host fragments to treat as "no billing API", comma separated.
    * Appended to the built-in defaults; a single provider can always override
    * with `"adapter": "generic"` in its own definition.
@@ -588,6 +596,10 @@ async function collect(ctx, snapshot) {
     lowThreshold: snapshot.lowThreshold,
     refreshSeconds: snapshot.refreshSeconds,
     usageDays: snapshot.usageDays,
+    // Which provider the sidebar seat speaks for. Empty means "decide from the
+    // report": the client then prefers the profile's default provider. Carried
+    // on the report so the seat needs no second source of truth.
+    defaultProvider: typeof snapshot.defaultProvider === 'string' ? snapshot.defaultProvider : '',
     providers: statuses,
     usage,
     counts: {
