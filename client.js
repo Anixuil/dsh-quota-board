@@ -29,6 +29,23 @@ window.__ModuleLoader__.load({
     const h = React.createElement
     const UI = require('@deepseek-ai/dsh-client-ui-primitives')
 
+    /**
+     * Portal renderer for the sidebar popover.
+     *
+     * The sidebar lives under a transformed ancestor, so a `position: fixed`
+     * child would be placed against that ancestor rather than the viewport — and
+     * clipped by its overflow. Harness ships `react-dom` to plugin clients; if a
+     * future build withholds it, the panel falls back to rendering inline (still
+     * fixed, possibly clipped) instead of throwing and blanking the seat.
+     */
+    let createPortal = null
+    try {
+      const reactDom = require('react-dom')
+      createPortal = typeof reactDom?.createPortal === 'function' ? reactDom.createPortal : null
+    } catch {
+      createPortal = null
+    }
+
     /** Package name: the bundle slot key and the client module id. */
     const PKG_NAME = 'dsh-quota-board'
 
@@ -546,6 +563,26 @@ window.__ModuleLoader__.load({
 
     const CSS = `
 .dqb_page{height:100%;overflow:auto;color:var(--dsw-alias-label-primary);box-sizing:border-box}
+/* --- sidebar seat ------------------------------------------------------- */
+.dqb_seat{display:flex;align-items:center;min-width:0;width:100%}
+.dqb_seatBtn{display:flex;align-items:center;gap:7px;width:100%;min-width:0;height:30px;padding:0 8px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;line-height:1;cursor:pointer;text-align:left}
+.dqb_seatBtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.dqb_seatBtn[aria-expanded="true"]{background:var(--dsw-alias-fill-l2);color:var(--dsw-alias-label-primary)}
+.dqb_seatLabel{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dqb_seatCaret{flex:none;font-size:9px;line-height:1;color:var(--dsw-alias-label-tertiary)}
+/* The popover is portaled to <body>: fixed would otherwise resolve against the
+   sidebar's transformed ancestor and be clipped by its overflow. */
+.dqb_pop{position:fixed;z-index:2147483000;width:min(460px,calc(100vw - 16px));max-height:min(78vh,720px);overflow:auto;overscroll-behavior:contain;background:var(--dsw-alias-settings-card-fill);border:1px solid var(--dsw-alias-border-l2);border-radius:14px;padding:14px 16px 16px;box-sizing:border-box;color:var(--dsw-alias-label-primary);box-shadow:0 18px 48px rgba(0,0,0,.18),0 2px 8px rgba(0,0,0,.08)}
+.dqb_popHead{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.dqb_popTitles{display:flex;flex-direction:column;gap:2px;min-width:0}
+.dqb_popTitle{font-size:14px;font-weight:600;line-height:20px}
+.dqb_popSub{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.dqb_board{display:flex;flex-direction:column;gap:12px}
+.dqb_iconBtn{width:26px;height:26px;flex:none;display:inline-flex;align-items:center;justify-content:center;padding:0;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}
+.dqb_iconBtn:hover{background:var(--dsw-alias-fill-l2);color:var(--dsw-alias-label-primary)}
+.dqb_iconBtn:disabled{opacity:.55;cursor:default}
+.dqb_spin{animation:dqb-spin 1s linear infinite}
+@keyframes dqb-spin{to{transform:rotate(360deg)}}
 .dqb_inner{display:flex;flex-direction:column;gap:22px;padding:0 clamp(20px,4vw,40px) 56px;max-width:1120px;margin:0 auto}
 .dqb_head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-top:28px}
 [data-platform="darwin"] .dqb_head{padding-top:calc(28px + var(--dsh-frame-top-clearance,0px))}
@@ -1310,12 +1347,184 @@ window.__ModuleLoader__.load({
     // the page
     // -----------------------------------------------------------------------
 
-    function QuotaBoardPage(props) {
+    /**
+     * The board body: header, stats, provider cards and local usage.
+     *
+     * Pure rendering — the seat owns loading, polling and placement, so the same
+     * markup can sit in the sidebar popover without a second fetch path.
+     */
+    function BoardContent(props) {
       const t = props.t
+      const report = props.report ?? null
+      const failure = props.failure ?? null
+      const busy = props.busy === true
+      const refresh = props.refresh
+      const openConfig = props.openConfig
+
+      const providers = Array.isArray(report?.providers) ? report.providers : []
+      const counts = report?.counts ?? { providers: 0, configured: 0, low: 0 }
+      const usage = report?.usage ?? null
+      const time = report?.generatedAt ? clockTime(report.generatedAt) : null
+      const subtitle =
+        time === null
+          ? t('summary')
+          : `${t('summary')} · ${format(t(report?.cached === true ? 'cachedAt' : 'updatedAt'), { time })}`
+
+      const header = h('div', { className: 'dqb_popHead', key: 'head' }, [
+        h('div', { className: 'dqb_popTitles', key: 'titles' }, [
+          h('span', { className: 'dqb_popTitle', key: 'title' }, t('title')),
+          h('span', { className: 'dqb_popSub', key: 'sub' }, subtitle),
+        ]),
+        h('div', { className: 'dqb_actions', key: 'actions' }, [
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dqb_iconBtn',
+              key: 'refresh',
+              disabled: busy,
+              title: busy ? t('actionRefreshing') : t('actionRefresh'),
+              'aria-label': busy ? t('actionRefreshing') : t('actionRefresh'),
+              onClick: () => refresh(true),
+            },
+            h(RefreshGlyph, { key: 'g', size: 15, spinning: busy }),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dqb_iconBtn',
+              key: 'config',
+              title: t('actionConfig'),
+              'aria-label': t('actionConfig'),
+              onClick: () => openConfig(),
+            },
+            h(GearGlyph, { key: 'g', size: 15 }),
+          ),
+        ]),
+      ])
+
+      if (report === null && failure === null) {
+        return h('div', { className: 'dqb_board' }, [
+          header,
+          h('div', { className: 'dqb_note', key: 'loading' }, t('loading')),
+        ])
+      }
+
+      if (report === null) {
+        return h('div', { className: 'dqb_board' }, [header, failureCard(failure, t, () => refresh(true))])
+      }
+
+      const body = [header]
+      if (failure !== null) {
+        body.push(
+          h('div', { className: 'dqb_warnNote', key: 'stale' }, format(t('errFailed'), { v: failure.reason ?? 'unreachable' })),
+        )
+      }
+
+      body.push(
+        h('div', { className: 'dqb_stats', key: 'stats' }, [
+          statBlock(t('statProviders'), `${counts.configured ?? 0}/${counts.providers ?? 0}`, '', false),
+          statBlock(t('statLow'), counts.low ?? 0, '', (counts.low ?? 0) > 0),
+          statBlock(t('statTotal'), compact(usage?.totals?.total ?? 0), t('statTokensUnit'), false),
+          statBlock(t('statToday'), compact(usage?.today ?? 0), t('statTokensUnit'), false),
+        ]),
+      )
+
+      if (providers.length === 0) {
+        body.push(
+          h('div', { className: 'dqb_card dqb_empty', key: 'empty' }, [
+            h('div', { className: 'dqb_emptyTitle', key: 'title' }, t('empty')),
+            h('p', { className: 'dqb_emptyText', key: 'hint' }, t('emptyHint')),
+            h('button', { type: 'button', className: 'dqb_btn', key: 'config', onClick: () => openConfig() }, t('actionConfig')),
+          ]),
+        )
+      } else {
+        body.push(h('div', { className: 'dqb_grid', key: 'grid' }, providers.map((provider) => providerCard(provider, t))))
+      }
+
+      body.push(usageSection(usage, t))
+
+      return h('div', { className: 'dqb_board' }, body)
+    }
+
+    /** Refresh glyph: an arc with an arrow head. */
+    function RefreshGlyph(props) {
+      const size = Number(props?.size) || 15
+      return h(
+        'svg',
+        {
+          width: size,
+          height: size,
+          viewBox: '0 0 24 24',
+          fill: 'none',
+          'aria-hidden': 'true',
+          className: props?.spinning === true ? 'dqb_spin' : undefined,
+          style: { display: 'block' },
+        },
+        h('path', {
+          key: 'arc',
+          d: 'M20 12a8 8 0 1 1-2.34-5.66',
+          stroke: 'currentColor',
+          strokeWidth: 1.8,
+          strokeLinecap: 'round',
+        }),
+        h('path', {
+          key: 'head',
+          d: 'M20 4v4h-4',
+          stroke: 'currentColor',
+          strokeWidth: 1.8,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+        }),
+      )
+    }
+
+    /** Settings glyph: a gear, drawn as a ring plus teeth. */
+    function GearGlyph(props) {
+      const size = Number(props?.size) || 15
+      return h(
+        'svg',
+        {
+          width: size,
+          height: size,
+          viewBox: '0 0 24 24',
+          fill: 'none',
+          'aria-hidden': 'true',
+          style: { display: 'block' },
+        },
+        h('circle', { key: 'ring', cx: 12, cy: 12, r: 3.1, stroke: 'currentColor', strokeWidth: 1.7 }),
+        h('path', {
+          key: 'teeth',
+          d: 'M12 3.2v2.1M12 18.7v2.1M3.2 12h2.1M18.7 12h2.1M5.8 5.8l1.5 1.5M16.7 16.7l1.5 1.5M18.2 5.8l-1.5 1.5M7.3 16.7l-1.5 1.5',
+          stroke: 'currentColor',
+          strokeWidth: 1.7,
+          strokeLinecap: 'round',
+        }),
+      )
+    }
+
+    /**
+     * The sidebar-footer seat: one button above the account row, and a
+     * trigger-anchored popover holding the board.
+     *
+     * This is a seat rather than a page on purpose — the board should be one
+     * click away without leaving the conversation, so the panel floats above the
+     * button and closes on outside click or Escape. The board only polls while
+     * it is open.
+     */
+    function QuotaBoardSeat(props) {
+      const t = props.t
+      const wide = props.wide === true
+      const [open, setOpen] = React.useState(false)
       const [report, setReport] = React.useState(null)
       const [failure, setFailure] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
+      const [anchor, setAnchor] = React.useState(null)
+      const rootRef = React.useRef(null)
+      const panelRef = React.useRef(null)
       const alive = React.useRef(true)
+      const seenReport = React.useRef(false)
 
       const refresh = React.useCallback(
         (force) => {
@@ -1325,6 +1534,7 @@ window.__ModuleLoader__.load({
             .then((result) => {
               if (!alive.current) return
               if (result.ok === true) {
+                seenReport.current = true
                 setReport(result.data)
                 setFailure(null)
               } else {
@@ -1343,87 +1553,108 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         alive.current = true
-        refresh(true)
         return () => {
           alive.current = false
         }
-      }, [refresh])
+      }, [])
 
-      const seconds = Math.max(10, Number(report?.refreshSeconds) || 60)
+      // Fetch on open, then keep it fresh only while it is visible.
       React.useEffect(() => {
-        const timer = setInterval(() => {
-          refresh(false)
-        }, seconds * 1000)
+        if (!open) return undefined
+        refresh(!seenReport.current)
+        const seconds = Math.max(10, Number(report?.refreshSeconds) || 60)
+        const timer = setInterval(() => refresh(false), seconds * 1000)
         return () => clearInterval(timer)
-      }, [refresh, seconds])
+        // `report.refreshSeconds` is the only field the interval depends on.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [open, refresh, report?.refreshSeconds])
 
-      const providers = Array.isArray(report?.providers) ? report.providers : []
-      const counts = report?.counts ?? { providers: 0, configured: 0, low: 0 }
-      const usage = report?.usage ?? null
-      const time = report?.generatedAt ? clockTime(report.generatedAt) : null
+      // Place the panel above the button, clamped to the viewport by the CSS
+      // max-height. Recomputed on resize and on any scroll, because the sidebar
+      // scrolls inside its own container.
+      React.useLayoutEffect(() => {
+        if (!open) return undefined
+        const place = () => {
+          const rect = rootRef.current?.getBoundingClientRect()
+          if (rect === undefined) return
+          setAnchor({ left: Math.max(8, rect.left), bottom: Math.max(8, window.innerHeight - rect.top + 8) })
+        }
+        place()
+        window.addEventListener('resize', place)
+        document.addEventListener('scroll', place, true)
+        return () => {
+          window.removeEventListener('resize', place)
+          document.removeEventListener('scroll', place, true)
+        }
+      }, [open])
 
-      const header = h('div', { className: 'dqb_head', key: 'head' }, [
-        h('div', { key: 'titles' }, [
-          h('h1', { className: 'dqb_title', key: 'title' }, t('title')),
-          h(
-            'p',
-            { className: 'dqb_sub', key: 'sub' },
-            time === null
-              ? t('summary')
-              : `${t('summary')} · ${format(t(report?.cached === true ? 'cachedAt' : 'updatedAt'), { time })}`,
-          ),
-        ]),
-        h('div', { className: 'dqb_actions', key: 'actions' }, [
-          h(
-            'button',
-            { type: 'button', className: 'dqb_btn', key: 'refresh', disabled: busy, onClick: () => refresh(true) },
-            busy ? t('actionRefreshing') : t('actionRefresh'),
-          ),
-          h('button', { type: 'button', className: 'dqb_btn', key: 'config', onClick: () => props.openConfig() }, t('actionConfig')),
-        ]),
-      ])
+      React.useEffect(() => {
+        if (!open) return undefined
+        const onPointerDown = (event) => {
+          const target = event.target
+          if (target instanceof Node !== true) return
+          if (rootRef.current?.contains(target) === true) return
+          if (panelRef.current?.contains(target) === true) return
+          setOpen(false)
+        }
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') setOpen(false)
+        }
+        document.addEventListener('mousedown', onPointerDown, true)
+        document.addEventListener('keydown', onKeyDown)
+        return () => {
+          document.removeEventListener('mousedown', onPointerDown, true)
+          document.removeEventListener('keydown', onKeyDown)
+        }
+      }, [open])
 
-      if (report === null && failure === null) {
-        return h('div', { className: 'dqb_page' }, [
-          h('div', { className: 'dqb_inner', key: 'inner' }, [header, h('div', { className: 'dqb_note', key: 'loading' }, t('loading'))]),
-        ])
-      }
-
-      if (report === null) {
-        return h('div', { className: 'dqb_page' }, [
-          h('div', { className: 'dqb_inner', key: 'inner' }, [header, failureCard(failure, t, () => refresh(true))]),
-        ])
-      }
-
-      const body = []
-      if (failure !== null) {
-        body.push(h('div', { className: 'dqb_warnNote', key: 'stale' }, format(t('errFailed'), { v: failure.reason ?? 'unreachable' })))
-      }
-
-      body.push(
-        h('div', { className: 'dqb_stats', key: 'stats' }, [
-          statBlock(t('statProviders'), `${counts.configured ?? 0}/${counts.providers ?? 0}`, '', false),
-          statBlock(t('statLow'), counts.low ?? 0, '', (counts.low ?? 0) > 0),
-          statBlock(t('statTotal'), compact(usage?.totals?.total ?? 0), t('statTokensUnit'), false),
-          statBlock(t('statToday'), compact(usage?.today ?? 0), t('statTokensUnit'), false),
-        ]),
+      const button = h(
+        'button',
+        {
+          type: 'button',
+          className: 'dqb_seatBtn',
+          'aria-haspopup': 'dialog',
+          'aria-expanded': open,
+          'aria-label': t('panel'),
+          title: t('panel'),
+          onClick: () => setOpen((value) => !value),
+        },
+        [
+          h(BoardIcon, { key: 'icon', size: wide ? 16 : 18, active: open }),
+          wide ? h('span', { className: 'dqb_seatLabel', key: 'label' }, t('panel')) : null,
+          wide ? h('span', { className: 'dqb_seatCaret', key: 'caret', 'aria-hidden': 'true' }, open ? '▾' : '▸') : null,
+        ],
       )
 
-      if (providers.length === 0) {
-        body.push(
-          h('div', { className: 'dqb_card dqb_empty', key: 'empty' }, [
-            h('div', { className: 'dqb_emptyTitle', key: 'title' }, t('empty')),
-            h('p', { className: 'dqb_emptyText', key: 'hint' }, t('emptyHint')),
-            h('button', { type: 'button', className: 'dqb_btn', key: 'config', onClick: () => props.openConfig() }, t('actionConfig')),
-          ]),
-        )
-      } else {
-        body.push(h('div', { className: 'dqb_grid', key: 'grid' }, providers.map((provider) => providerCard(provider, t))))
-      }
+      const panel =
+        open === false
+          ? null
+          : h(
+              'div',
+              {
+                className: 'dqb_pop',
+                ref: panelRef,
+                role: 'dialog',
+                'aria-label': t('title'),
+                style:
+                  anchor === null
+                    ? { left: 8, bottom: 8, visibility: 'hidden' }
+                    : { left: `${anchor.left}px`, bottom: `${anchor.bottom}px` },
+              },
+              h(BoardContent, {
+                t,
+                report,
+                failure,
+                busy,
+                refresh,
+                openConfig: props.openConfig,
+              }),
+            )
 
-      body.push(usageSection(usage, t))
-
-      return h('div', { className: 'dqb_page' }, [h('div', { className: 'dqb_inner', key: 'inner' }, [header, ...body])])
+      return h('div', { className: 'dqb_seat', ref: rootRef }, [
+        button,
+        panel === null ? null : createPortal === null ? panel : createPortal(panel, document.body),
+      ])
     }
 
     /** Sidebar glyph: a gauge, drawn inline so no icon package is imported. */
@@ -2312,7 +2543,8 @@ window.__ModuleLoader__.load({
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-quota-board: dictionaries')
       ctx.effect(() => installStyles(), 'dsh-quota-board: styles')
 
-      // The board page: a keyed `main` panel plus the sidebar entry that opens it.
+      // Jumping to this plugin's own settings row: `pluginNavigation` is optional,
+      // so a Harness without it still leaves the sidebar Plugins page reachable.
       const openConfig = () => {
         try {
           ctx.get('pluginNavigation')?.openBundle?.(PKG_NAME)
@@ -2323,28 +2555,19 @@ window.__ModuleLoader__.load({
 
       mountService(ctx)
 
-      ctx.slots.inject('main', () =>
+      // One seat in the sidebar footer, directly above the account row: the
+      // board opens as a popover from there, so reading a balance never costs
+      // the conversation you were in.
+      ctx.slots.inject('sidebar.footer.action', () =>
         ctx.slots.register(
           {
-            name: 'main',
-            key: PANEL_ID,
-            locale: NS,
-            inject: () => ({ load: (force) => loadBoard(ctx, force), openConfig }),
-          },
-          QuotaBoardPage,
-        ),
-      )
-
-      ctx.slots.inject('sidebar.panellist', () =>
-        ctx.slots.register(
-          {
-            name: 'sidebar.panellist',
+            name: 'sidebar.footer.action',
             id: PANEL_ID,
             order: PANEL_ORDER,
             locale: NS,
-            label: () => t('panel'),
+            inject: () => ({ load: (force) => loadBoard(ctx, force), openConfig }),
           },
-          BoardIcon,
+          QuotaBoardSeat,
         ),
       )
 

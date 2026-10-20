@@ -416,12 +416,11 @@ assert.deepEqual(
   [
     '@deepseek-ai/dsh-api-remotes',
     '@deepseek-ai/dsh-client-locale',
-    '@deepseek-ai/dsh-client-ui-layout',
     '@deepseek-ai/dsh-client-ui-plugin-manager',
     '@deepseek-ai/dsh-client-ui-settings',
     '@deepseek-ai/dsh-client-ui-sidebar',
   ],
-  'dsh.client.inject 必须覆盖本插件注册用到的槽位主人（main / sidebar.panellist / plugins.*）',
+  'dsh.client.inject 必须覆盖本插件注册用到的槽位主人（sidebar.footer.action / plugins.*）',
 )
 ok(`dsh.client.inject 覆盖 ${declaredInject.length} 个槽位主人`)
 
@@ -451,22 +450,31 @@ const mounts = [...clientSrc.matchAll(/^[ \t]+mountForm\(\s*ctx,\s*card,\s*(\w+)
 assert.deepEqual(mounts, ['BUNDLE_SLOT', 'ITEM_SLOT', 'ROW_SLOT'], '三个入口都必须挂载，缺一个就少一个配置入口')
 ok(`三个入口都经 configForms.whileServed 挂载（${mounts.join(' + ')}）`)
 
-// Runner-level slots: the page and the sidebar entry share PANEL_ID, which is
-// how selecting the sidebar entry reaches this page instead of a blank centre.
+// One entry point only: the board lives in the sidebar footer as a popover, so
+// there must be no `main` page and no `sidebar.panellist` row left behind.
 assert.ok(
-  new RegExp(`name:\\s*'main'[^}]*key:\\s*PANEL_ID`, 'u').test(clientSrc),
-  '页面必须注册到 main 槽，并用 PANEL_ID 作为 key',
+  new RegExp(`name:\\s*'sidebar\\.footer\\.action'[^}]*id:\\s*PANEL_ID`, 'u').test(clientSrc),
+  '看板必须注册到 sidebar.footer.action，id 必须是 PANEL_ID',
 )
 assert.ok(
-  new RegExp(`name:\\s*'sidebar\\.panellist'[^}]*id:\\s*PANEL_ID`, 'u').test(clientSrc),
-  '侧栏入口必须注册到 sidebar.panellist，id 必须是 PANEL_ID',
+  !/name:\s*'main'/u.test(clientSrc),
+  '旧的 main 页面必须删掉，否则浮窗之外还会多出一份常驻看板',
 )
-assert.ok(/layout\.selectPanel|selectPanel\(/u.test(clientSrc) || /PANEL_ID/u.test(clientSrc), '侧栏入口与页面必须共用 PANEL_ID')
-ok('页面与侧栏入口共用 PANEL_ID，切面板能落到这一页')
+assert.ok(
+  !/name:\s*'sidebar\.panellist'/u.test(clientSrc),
+  '旧的侧栏列表入口必须删掉，否则同一个看板会有两个入口',
+)
+assert.ok(
+  /sidebar\.footer\.action/u.test(clientSrc) && /createPortal/u.test(clientSrc),
+  '浮窗必须 portal 到 body：侧栏处在 transform 祖先之下，fixed 会被裁剪',
+)
+ok('看板只有一个入口：侧栏底部席位 + portal 浮窗')
 
 // Two registrations of the same (slot, key) silently replace each other.
 const registrations = [...clientSrc.matchAll(/ctx\.slots\.register\(\s*\{([^}]*)\}/gu)].map((match) => match[1])
-assert.ok(registrations.length >= 3, `页面、侧栏入口、配置表单三类注册缺一不可，实际 ${registrations.length} 处`)
+// Two literal call sites: the footer seat and the shared `mountForm` template.
+// The three config forms go through that template, so a count of 2 is whole.
+assert.ok(registrations.length >= 2, `席位 + 配置表单模板缺一不可，实际 ${registrations.length} 处`)
 ok(`共 ${registrations.length} 处槽位注册`)
 
 // ---------------------------------------------------------------------------

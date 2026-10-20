@@ -55,6 +55,9 @@ function makeReact() {
     },
     useCallback: (fn) => fn,
     useEffect: () => {},
+    // The popover measures its anchor here; the preview seeds the measurement
+    // instead, because there is no layout to measure in a Node process.
+    useLayoutEffect: () => {},
   }
   return {
     React,
@@ -152,6 +155,9 @@ const cssMatch = /const CSS = `([\s\S]*?)`\n/u.exec(source)
 if (cssMatch === null) throw new Error('client.js 里没找到 CSS 常量')
 
 let factory = null
+// The popover portals into <body> and subscribes on `document`; the preview only
+// needs the calls to land somewhere.
+const noop = () => {}
 const sandbox = {
   window: {
     __ModuleLoader__: {
@@ -159,8 +165,17 @@ const sandbox = {
         factory = definition.factory
       },
     },
+    innerHeight: 900,
+    addEventListener: noop,
+    removeEventListener: noop,
   },
-  document: undefined,
+  document: {
+    body: {},
+    addEventListener: noop,
+    removeEventListener: noop,
+    querySelector: () => ({}),
+  },
+  Node: class {},
   console,
   setInterval: () => 0,
   clearInterval: () => {},
@@ -170,6 +185,7 @@ vm.runInNewContext(source, sandbox)
 const react = makeReact()
 const materialized = factory((specifier) => {
   if (specifier === 'react') return react.React
+  if (specifier === 'react-dom') return { createPortal: (node) => node }
   if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return uiStub
   throw new Error(`unexpected require: ${specifier}`)
 })
@@ -213,6 +229,34 @@ const VOID = new Set(['input', 'br', 'img', 'hr', 'meta', 'link'])
 const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
 const escapeHtml = (text) => String(text).replace(/[&<>"']/gu, (char) => ESCAPES[char])
 
+/**
+ * React spells SVG attributes in camelCase (`strokeWidth`), while the HTML parser
+ * lowercases every attribute name — so an inline SVG serialized verbatim loses
+ * its stroke widths and dashes and draws as a hairline. Only SVG names are
+ * hyphenated; `viewBox` must keep its capital B out of the conversion.
+ */
+const SVG_ATTRS = new Set([
+  'strokeWidth',
+  'strokeLinecap',
+  'strokeLinejoin',
+  'strokeDasharray',
+  'strokeDashoffset',
+  'strokeOpacity',
+  'strokeMiterlimit',
+  'fillRule',
+  'fillOpacity',
+  'clipRule',
+  'clipPath',
+  'textAnchor',
+  'dominantBaseline',
+  'stopColor',
+  'stopOpacity',
+  'vectorEffect',
+  'paintOrder',
+])
+const svgAttribute = (key) =>
+  SVG_ATTRS.has(key) ? key.replace(/[A-Z]/gu, (char) => `-${char.toLowerCase()}`) : key
+
 function toHtml(node) {
   if (node === null || node === undefined || node === false || node === true) return ''
   if (typeof node === 'string' || typeof node === 'number') return escapeHtml(node)
@@ -248,7 +292,7 @@ function toHtml(node) {
       if (css.length > 0) attrs.push(`style="${escapeHtml(css)}"`)
       continue
     }
-    attrs.push(`${key}="${escapeHtml(value)}"`)
+    attrs.push(`${svgAttribute(key)}="${escapeHtml(value)}"`)
   }
   const open = `<${type}${attrs.length > 0 ? ` ${attrs.join(' ')}` : ''}>`
   if (VOID.has(type)) return open
@@ -435,11 +479,27 @@ const okHtml = await paintAfterProbe(filled, peers, probeOk)
 const failHtml = await paintAfterProbe(filled, peers, probeFailed)
 
 // ---------------------------------------------------------------------------
-// the board page itself
+// the footer seat and its popover
 // ---------------------------------------------------------------------------
 
-const page = registrations.find((entry) => entry.options?.name === 'main')?.component
-if (page === undefined) throw new Error('没有注册 main 槽位')
+const seat = registrations.find((entry) => entry.options?.name === 'sidebar.footer.action')?.component
+if (seat === undefined) throw new Error('没有注册 sidebar.footer.action 槽位')
+
+/** Every element of a tree, calling function components like a renderer would. */
+function elementsOf(node, out = []) {
+  if (node === null || node === undefined || typeof node !== 'object') return out
+  if (Array.isArray(node)) {
+    for (const child of node) elementsOf(child, out)
+    return out
+  }
+  if (typeof node.type === 'function') {
+    elementsOf(node.type(node.props), out)
+    return out
+  }
+  out.push(node)
+  elementsOf(node.props?.children, out)
+  return out
+}
 
 const HOUR = 3_600_000
 const DAY = 86_400_000
@@ -548,17 +608,45 @@ const boardReport = {
   },
 }
 
-function paintBoard(report) {
+/**
+ * Render the seat one click after mount.
+ *
+ * The open flag, the report and the anchor are seeded because a Node process has
+ * no layout to measure and no second render pass to settle a promise in. The
+ * anchor is what the layout effect would compute for a 240px sidebar: the panel
+ * sits 8px above the button, flush with the sidebar's left edge.
+ */
+function paintSeat(report, options = {}) {
+  const { open = true, wide = true } = options
   react.resetAll()
-  react.reset()
-  // Hook 0 is `useState(null)` for the report; the fetch effect is inert here.
-  react.seed(0, report)
-  const tree = page({ t, load: () => Promise.resolve({ ok: true, data: report }), openConfig: () => {} })
-  return toHtml(tree)
+  react.seed(0, open)
+  react.seed(1, report)
+  react.seed(3, false)
+  react.seed(4, open ? { left: 8, bottom: 8 } : null)
+  const tree = seat({ t, load: () => Promise.resolve({ ok: true, data: report }), openConfig: () => {}, wide })
+  const elements = elementsOf(tree)
+  const pop = elements.find((element) => element.props?.className === 'dqb_pop')
+  // The sidebar sits under a transformed ancestor, so the shipped panel is
+  // `position:fixed` with hand-computed coordinates. In a static page that would
+  // pin it to the viewport corner, so the preview re-hosts it in normal flow.
+  const inFlow = pop === undefined ? null : {
+    ...pop,
+    props: {
+      ...pop.props,
+      style: { ...pop.props.style, position: 'relative', left: 'auto', bottom: 'auto', visibility: 'visible', maxHeight: 'none' },
+    },
+  }
+  return {
+    // The button alone: the wrapper also holds the portalled panel, which is
+    // rendered again below so the two can be laid out side by side.
+    button: toHtml(elements.find((element) => element.props?.className === 'dqb_seatBtn') ?? ''),
+    pop: inFlow === null ? '' : toHtml(inFlow),
+  }
 }
 
-const boardHtml = paintBoard(boardReport)
-const boardEmptyHtml = paintBoard({ ...boardReport, providers: [], counts: { providers: 0, configured: 0, low: 0 } })
+const board = paintSeat(boardReport)
+const boardEmpty = paintSeat({ ...boardReport, providers: [], counts: { providers: 0, configured: 0, low: 0 } })
+const narrowSeat = paintSeat(boardReport, { open: false, wide: false })
 
 
 // Harness ships these tokens; the preview only needs a plausible light theme.
@@ -602,6 +690,12 @@ h1{font-size:17px;margin:0 0 4px}
 .pv_input{height:30px;box-sizing:border-box;border:1px solid #e2e5e9;border-radius:7px;background:#f7f8fa;color:#1f2328;font:12.5px inherit;padding:0 9px;width:100%}
 .pv_hint{margin:0;font-size:11.5px;line-height:17px;color:#8b939f}
 .pv_disabled{opacity:.6}
+.pv_scene{display:flex;gap:18px;align-items:flex-start;padding:18px;background:#f4f6f8;border:1px solid #e6e8ec;border-radius:14px}
+.pv_sidebar{width:236px;height:520px;flex:none;display:flex;flex-direction:column;justify-content:flex-end;padding:8px 8px 10px;background:#fff;border:1px solid #e6e8ec;border-radius:12px}
+.pv_slot{height:26px;border-radius:7px;background:#f1f3f6;margin-bottom:3px}
+.pv_accountRow{display:flex;align-items:center;gap:8px;height:34px;margin-top:4px;padding:0 8px;border-radius:8px;font-size:12.5px;color:#5b6470;background:#f7f8fa}
+.pv_avatar{width:20px;height:20px;flex:none;border-radius:50%;background:#d7dce2}
+.pv_popHost{flex:1;min-width:0}
 `
 
 const html = `<!DOCTYPE html>
@@ -625,12 +719,38 @@ const html = `<!DOCTYPE html>
   ${failHtml}
 </div>
 <div class="wrap wrapWide">
-  <h1>看板页</h1>
-  <p class="note">同一个 client.js 的页面组件；数据来自 dev/preview.mjs 里的固定样本。</p>
-  <p class="caption">两个供应商 · DeepSeek 走账号余额</p>
-  <div class="frame">${boardHtml}</div>
+  <h1>侧栏底部席位 + 浮窗</h1>
+  <p class="note">同一个 client.js 的侧栏席位组件；左侧是侧栏底部的真实排布（按钮在账号行上方），右侧是被 portal 出去的浮窗本体。</p>
+  <p class="caption">展开态侧栏 · 点开之后</p>
+  <div class="pv_scene">
+    <div class="pv_sidebar">
+      <div class="pv_slot"></div>
+      <div class="pv_slot"></div>
+      ${board.button}
+      <div class="pv_accountRow"><span class="pv_avatar"></span><span>anixuil</span></div>
+    </div>
+    <div class="pv_popHost">${board.pop}</div>
+  </div>
+  <p class="caption">收起态侧栏 · 只剩图标</p>
+  <div class="pv_scene">
+    <div class="pv_sidebar" style="width:64px">
+      <div class="pv_slot"></div>
+      <div class="pv_slot"></div>
+      ${narrowSeat.button}
+      <div class="pv_accountRow"><span class="pv_avatar" style="margin:0 auto"></span></div>
+    </div>
+    <div class="pv_popHost" style="color:#8b939f;font-size:12px">侧栏收起时按钮只留图标，宽度由侧栏决定。</div>
+  </div>
   <p class="caption">没有任何供应商</p>
-  <div class="frame">${boardEmptyHtml}</div>
+  <div class="pv_scene">
+    <div class="pv_sidebar">
+      <div class="pv_slot"></div>
+      <div class="pv_slot"></div>
+      ${boardEmpty.button}
+      <div class="pv_accountRow"><span class="pv_avatar"></span><span>anixuil</span></div>
+    </div>
+    <div class="pv_popHost">${boardEmpty.pop}</div>
+  </div>
 </div>
 </body>
 </html>
@@ -640,21 +760,37 @@ writeFileSync(OUT, html, 'utf8')
 console.log(`wrote ${OUT}`)
 console.log(`size ${(html.length / 1024).toFixed(1)} KB`)
 
-// The board page on its own, so a screenshot of it is not pushed off the bottom
-// of a very long settings page.
+// The board on its own, so a screenshot of it is not pushed off the bottom of a
+// very long settings page.
 const boardHtmlDoc = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<title>额度看板 · 页面预览</title>
+<title>额度看板 · 浮窗预览</title>
 <style>${TOKENS}${cssMatch[1]}${PREVIEW_CSS}</style>
 </head>
 <body>
 <div class="wrap wrapWide">
   <p class="caption">两个供应商 · DeepSeek 走账号余额 · 一条未配置</p>
-  <div class="frame">${boardHtml}</div>
+  <div class="pv_scene">
+    <div class="pv_sidebar">
+      <div class="pv_slot"></div>
+      <div class="pv_slot"></div>
+      ${board.button}
+      <div class="pv_accountRow"><span class="pv_avatar"></span><span>anixuil</span></div>
+    </div>
+    <div class="pv_popHost">${board.pop}</div>
+  </div>
   <p class="caption">没有任何供应商</p>
-  <div class="frame">${boardEmptyHtml}</div>
+  <div class="pv_scene">
+    <div class="pv_sidebar">
+      <div class="pv_slot"></div>
+      <div class="pv_slot"></div>
+      ${boardEmpty.button}
+      <div class="pv_accountRow"><span class="pv_avatar"></span><span>anixuil</span></div>
+    </div>
+    <div class="pv_popHost">${boardEmpty.pop}</div>
+  </div>
 </div>
 </body>
 </html>

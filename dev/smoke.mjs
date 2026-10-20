@@ -887,6 +887,12 @@ function makeReact() {
     useEffect(fn) {
       runtime.effects.push(fn)
     },
+    // The popover measures its anchor in a layout effect. This stub only queues
+    // it like `useEffect`: the fake refs are `null`, so the effect has to cope
+    // with an unmeasured anchor anyway.
+    useLayoutEffect(fn) {
+      runtime.effects.push(fn)
+    },
   }
   const reset = (seeds) => {
     runtime.index = 0
@@ -895,6 +901,16 @@ function makeReact() {
     runtime.hooks = []
     runtime.seeds = [...(seeds ?? [])]
     runtime.effects = []
+  }
+  /**
+   * Re-render against the *same* hook slots, which is what a click does in a
+   * real renderer. The index has to rewind or the second pass would allocate
+   * fresh slots for every hook and drop the state the event just wrote.
+   */
+  const rerender = () => {
+    runtime.index = 0
+    runtime.effects = []
+    return runtime
   }
   const flush = () => {
     for (const effect of runtime.effects) {
@@ -907,7 +923,7 @@ function makeReact() {
     for (const cleanup of runtime.cleanups) cleanup()
     runtime.cleanups = []
   }
-  return { React, runtime, reset, flush, dispose }
+  return { React, runtime, reset, rerender, flush, dispose }
 }
 
 /** Text content of a tree, calling function components the way a renderer would. */
@@ -970,6 +986,50 @@ uiStub.SettingsFormModel.instances = []
 
 const source = readFileSync(join(ROOT, 'client.js'), 'utf8')
 let factory = null
+
+/**
+ * Just enough DOM for the popover: it portals into `<body>` and listens on
+ * `document` for outside clicks and Escape, so the harness has to be able to
+ * register those listeners and fire them back.
+ */
+function makeDom() {
+  const listeners = new Map()
+  const key = (type, capture) => `${type}:${capture === true ? 'capture' : 'pass'}`
+  const add = (type, fn, capture) => {
+    const slot = key(type, capture)
+    if (!listeners.has(slot)) listeners.set(slot, new Set())
+    listeners.get(slot).add(fn)
+  }
+  const remove = (type, fn, capture) => {
+    listeners.get(key(type, capture))?.delete(fn)
+  }
+  class DomNode {
+    contains() {
+      return false
+    }
+  }
+  const dom = {
+    Node: DomNode,
+    body: new DomNode(),
+    head: { appendChild() {} },
+    innerHeight: 900,
+    addEventListener: add,
+    removeEventListener: remove,
+    // The stylesheet injector bails out when the tag is already present; CSS
+    // text is asserted by validate.mjs, not by a DOM here.
+    querySelector: () => ({}),
+    createElement: () => ({ setAttribute() {}, appendChild() {} }),
+  }
+  dom.fire = (type, event, capture) => {
+    for (const fn of [...(listeners.get(key(type, capture)) ?? [])]) fn(event)
+  }
+  dom.listenerCount = (type, capture) => listeners.get(key(type, capture))?.size ?? 0
+  return dom
+}
+
+const dom = makeDom()
+/** Timer bookkeeping for the "only polls while open" assertion. */
+const timers = { intervals: 0, timeouts: 0 }
 const sandbox = {
   window: {
     __ModuleLoader__: {
@@ -977,13 +1037,25 @@ const sandbox = {
         factory = definition.factory
       },
     },
+    innerHeight: dom.innerHeight,
+    addEventListener: dom.addEventListener,
+    removeEventListener: dom.removeEventListener,
   },
-  document: undefined,
+  document: dom,
+  Node: dom.Node,
   console,
-  // The page arms a refresh timer inside an effect; the real sandbox is a
-  // browser, so a no-op timer is all the render pass needs.
-  setInterval: () => 0,
+  // The seat arms a refresh timer only while it is open, so the harness counts
+  // them: "closed" has to mean "no timer at all", not "a timer that no-ops".
+  setInterval: () => {
+    timers.intervals += 1
+    return 0
+  },
   clearInterval: () => {},
+  setTimeout: (fn) => {
+    timers.timeouts += 1
+    return { unref() {} }
+  },
+  clearTimeout: () => {},
 }
 vm.runInNewContext(source, sandbox)
 
@@ -991,6 +1063,7 @@ const react = makeReact()
 // The factory reads `require` once, so the stub must exist before it runs.
 const materialized = factory((specifier) => {
   if (specifier === 'react') return react.React
+  if (specifier === 'react-dom') return { createPortal: (node) => node }
   if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return uiStub
   throw new Error(`unexpected require: ${specifier}`)
 })
@@ -1162,15 +1235,56 @@ const fakeCtx = {
 
 materialized.apply(fakeCtx)
 
-check('the page mounts as a keyed main panel and a sidebar entry', () => {
-  const main = registrations.find((entry) => entry.options.name === 'main')
-  const sidebar = registrations.find((entry) => entry.options.name === 'sidebar.panellist')
-  assert.ok(main, 'main panel missing')
-  assert.equal(main.options.key, 'quota-board')
-  assert.equal(main.options.locale, 'settings.quotaBoard')
-  assert.ok(sidebar, 'sidebar entry missing')
-  assert.equal(sidebar.options.id, 'quota-board')
-  assert.equal(typeof sidebar.options.label(), 'string')
+// Render with the shipping Chinese strings, so the assertions check what a user
+// actually reads rather than which dictionary key was picked.
+const zh = materialized.dictionaries.zh
+const t = (key) => (zh[key] === undefined ? key : zh[key])
+
+const seatComponent = registrations.find((entry) => entry.options.name === 'sidebar.footer.action').component
+
+/**
+ * Render the popover exactly as it looks one click after mount.
+ *
+ * The open flag and the report are seeded rather than clicked through here: the
+ * stub renderer is synchronous, so a promise started by the click could never
+ * settle before the assertion. The click path itself is covered separately.
+ */
+function renderPopover(options = {}) {
+  const { report = null, failure = null, busy = false } = options
+  react.reset([true, report, failure, busy, null])
+  const tree = seatComponent({
+    t,
+    load: () => Promise.resolve({ ok: true, data: report }),
+    openConfig: () => {},
+    wide: true,
+  })
+  react.flush()
+  return tree
+}
+
+/**
+ * Kept under the old name and signature — `[report, failure, busy]` seeds — so
+ * the content checks read the same as before the seat rewrite. The trailing
+ * `loadResult` argument is now redundant and simply ignored.
+ */
+const renderPage = ([report = null, failure = null, busy = false] = []) =>
+  renderPopover({ report, failure, busy: busy === true })
+
+check('the board mounts as one sidebar-footer seat, not a page or a tab', () => {
+  const seat = registrations.find((entry) => entry.options.name === 'sidebar.footer.action')
+  assert.ok(seat, 'sidebar footer seat missing')
+  assert.equal(seat.options.id, 'quota-board')
+  assert.equal(seat.options.locale, 'settings.quotaBoard')
+  assert.equal(seat.options.order, materialized.PANEL_ORDER)
+  assert.equal(typeof seat.options.inject().load, 'function')
+  // The old entry points are gone: a leftover `main` panel would show up as a
+  // second, permanent copy of the board next to the popover.
+  assert.equal(registrations.some((entry) => entry.options.name === 'main'), false, 'stale main panel')
+  assert.equal(
+    registrations.some((entry) => entry.options.name === 'sidebar.panellist'),
+    false,
+    'stale sidebar list entry',
+  )
 })
 check('all three settings-form slots are registered', () => {  for (const slot of ['plugins.bundle.config', 'plugins.item', 'plugins.row.config']) {
     assert.ok(registrations.some((entry) => entry.options.name === slot), `${slot} missing`)
@@ -1179,40 +1293,69 @@ check('all three settings-form slots are registered', () => {  for (const slot o
   assert.equal(row.options.key, 'dsh-quota-board#quota-board')
 })
 
-check('the sidebar icon renders without throwing', () => {
-  const icon = registrations.find((entry) => entry.options.name === 'sidebar.panellist').component
-  for (const active of [true, false]) {
-    const tree = icon({ size: 20, active })
-    const elements = elementsOf(tree)
-    assert.equal(elements[0]?.type, 'svg')
-    assert.equal(elements[0].props.width, 20)
-    assert.ok(
-      elements.some((element) => element.props.strokeWidth !== undefined),
-      'the icon must draw strokes',
-    )
+check('clicking the seat opens the popover, clicking again closes it', () => {
+  const props = { t, load: () => Promise.resolve({ ok: true, data: reportFixture }), openConfig: () => {}, wide: true }
+  // One render pass per call: a real renderer rewinds the hook index and hands
+  // back the state the previous event wrote.
+  const render = () => {
+    react.rerender()
+    return seatComponent(props)
   }
+  const button = (tree) => elementsOf(tree).find((element) => element.type === 'button')
+  const isOpen = () => elementsOf(render()).some((element) => element.props?.className === 'dqb_pop')
+
+  react.reset([])
+  assert.equal(isOpen(), false, 'it starts closed')
+  const armed = timers.intervals
+  react.flush()
+  assert.equal(timers.intervals, armed, 'a closed seat must not arm a refresh timer')
+
+  button(render()).props.onClick()
+  const pop = elementsOf(render()).find((element) => element.props?.className === 'dqb_pop')
+  assert.ok(pop, 'the click must mount the popover')
+  assert.equal(pop.props.role, 'dialog')
+  assert.equal(pop.props['aria-label'], t('title'))
+  // Placement is manual because the sidebar sits under a transformed ancestor
+  // that would clip a fixed panel; until the anchor is measured it stays hidden
+  // rather than flashing at the wrong corner.
+  assert.equal(pop.props.style.visibility, 'hidden', 'unmeasured anchor must stay hidden')
+
+  button(render()).props.onClick()
+  assert.equal(isOpen(), false, 'a second click must close it')
+  assert.doesNotMatch(textOf(render()), /火山引擎/)
+  react.dispose()
 })
 
-const pageComponent = registrations.find((entry) => entry.options.name === 'main').component
-// Render with the shipping Chinese strings, so the assertions check what a user
-// actually reads rather than which dictionary key was picked.
-const zh = materialized.dictionaries.zh
-const t = (key) => (zh[key] === undefined ? key : zh[key])
-
-function renderPage(seeds, loadResult) {
-  react.reset(seeds)
-  const props = {
-    t,
-    load: () => Promise.resolve(loadResult),
-    openConfig: () => {},
+check('Escape and an outside click both dismiss the popover', () => {
+  const props = { t, load: () => Promise.resolve({ ok: true, data: reportFixture }), openConfig: () => {}, wide: true }
+  const mount = () => {
+    react.reset([true, reportFixture, null, false, null])
+    const tree = seatComponent(props)
+    react.flush()
+    assert.ok(elementsOf(tree).some((element) => element.props?.className === 'dqb_pop'), 'precondition: it is open')
   }
-  const tree = pageComponent(props)
-  react.flush()
-  return tree
-}
+  const isOpen = () => {
+    react.rerender()
+    return elementsOf(seatComponent(props)).some((element) => element.props?.className === 'dqb_pop')
+  }
+
+  mount()
+  dom.fire('keydown', { key: 'Escape' })
+  assert.equal(isOpen(), false, 'Escape must close the popover')
+
+  mount()
+  dom.fire('keydown', { key: 'a' })
+  assert.equal(isOpen(), true, 'other keys must not close it')
+
+  mount()
+  dom.fire('mousedown', { target: new dom.Node() }, true)
+  assert.equal(isOpen(), false, 'an outside click must close the popover')
+
+  react.dispose()
+})
 
 check('the loading state renders', () => {
-  const text = textOf(renderPage([null, null, false], { ok: true, data: reportFixture }))
+  const text = textOf(renderPage([null, null, false]))
   assert.match(text, /正在读取额度/)
 })
 

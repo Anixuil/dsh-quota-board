@@ -1,13 +1,14 @@
 # dsh-quota-board
 
 > A DeepSeek Harness plugin that puts every model provider's balance, plan
-> windows and local token usage on one page. DeepSeek reads the signed-in
-> account wallet Harness already has; every other provider is an "extra" that a
-> universal prober figures out on its own — and the endpoint it finds is
-> remembered.
+> windows and local token usage in one popover, anchored to a button above the
+> account row in the sidebar footer. DeepSeek reads the signed-in account wallet
+> Harness already has; every other provider is an "extra" that a universal prober
+> figures out on its own — and the endpoint it finds is remembered.
 
-一个给 DeepSeek Harness 桌面端的「模型供应商额度看板」：左侧栏多一个入口，中间列一整页，
-把当前 profile 里**所有已配置的模型供应商**的余额、套餐额度、以及本机的 token 用量摆在一起。
+一个给 DeepSeek Harness 桌面端的「模型供应商额度看板」：侧栏底部、账号行上方多一个按钮，
+点开就是一整块看板，把当前 profile 里**所有已配置的模型供应商**的余额、套餐额度、
+以及本机的 token 用量摆在一起。看过期就点掉，不用离开正在进行的对话。
 
 只有 **DeepSeek 是内置的**：登录后直接读 Harness 的账号钱包，和「设置 → 账号与余额」是同一个数字，
 不用再填 API Key；其余一律算「额外供应商」——火山引擎、中转站、自建网关都一样：
@@ -186,6 +187,20 @@ pnpm 记成 `link:`，此后改 `index.js` / `client.js` 只要重启 Harness �
 
 装完**重启 Harness**（bundle 类插件不热加载）。
 
+## 看板在哪
+
+侧栏**左下角、账号行上方**多出一个「额度看板」按钮，点一下浮窗就贴在这个按钮上展开：
+
+- 浮窗是 **portal 到 `<body>`** 的，不挂在侧栏里 —— 侧栏处在 transform 祖先之下，
+  `position: fixed` 会被那一层的 overflow 裁掉，所以定位按按钮的 `getBoundingClientRect()`
+  算好后手动贴边，窗口缩放或侧栏滚动时重算。
+- 关闭方式三选一：再点一次按钮、点浮窗外面、按 `Esc`。
+- **只有浮窗开着才拉数据**：打开时取一次，之后按 `refreshSeconds` 轮询；
+  关掉即停表，不会在后台一直打接口。
+- 侧栏收起（只剩图标列）时按钮也只留图标，宽度吃满侧栏，不撑破布局。
+
+想改配置：浮窗右上角的齿轮 → 设置 → 插件 → 额度看板。
+
 ## 配置
 
 设置 → 插件 → 额度看板。七个字段，全部有默认值，多数情况下一个都不用动：
@@ -194,7 +209,7 @@ pnpm 记成 `link:`，此后改 `index.js` / `client.js` 只要重启 Harness �
 |---|---|---|
 | `providers` | `[]` | 额外供应商列表，补充或覆盖自动发现的那些（设置页是可增删的卡片列表） |
 | `lowThreshold` | `5` | 金额余额低于此值时标红 |
-| `refreshSeconds` | `60` | 页面停留时的轮询间隔（最小 10 秒；宿主管 20 秒缓存） |
+| `refreshSeconds` | `60` | 浮窗打开时的轮询间隔（最小 10 秒；宿主管 20 秒缓存） |
 | `usageDays` | `14` | 本机用量柱状图天数（3–60） |
 | `timeoutMs` | `10000` | 单个供应商接口超时（最小 2000） |
 | `deepseekBaseURL` | `''` | 所有 DeepSeek 行都没写 baseURL 时的兜底 |
@@ -237,9 +252,9 @@ providers:
 
 | 情况 | 表现 |
 |---|---|
-| Harness 不带 Typert remote | 页面直说「宿主没有提供额度服务」，并给出原因（无 `$mount` / 被 Gateway 拒绝 / 读不到命名空间 / 没有 `load` 方法） |
+| Harness 不带 Typert remote | 浮窗直说「宿主没有提供额度服务」，并给出原因（无 `$mount` / 被 Gateway 拒绝 / 读不到命名空间 / 没有 `load` 方法） |
 | 没配密钥 | 卡片标「未配置」，其余卡片照常 |
-| 某个供应商接口挂了 | 只有那张卡显示错误，整页不塌 |
+| 某个供应商接口挂了 | 只有那张卡显示错误，整块不塌 |
 | 平台没有账单接口 | 卡片标明，本机用量照常统计 |
 | 没有投影缓存 | 用量区显示 0 并说明还没记录 |
 
@@ -247,7 +262,7 @@ providers:
 
 ```
 index.js            宿主半侧：发现供应商、解析密钥、并发查询、聚合用量；暴露 load(force) 与 test(entry)
-client.js           浏览器半侧：整页面板 + 侧栏入口 + 三处配置表单
+client.js           浏览器半侧：侧栏底部席位 + portal 浮窗 + 三处配置表单
 adapters.js         纯函数适配器：路由、HTTP、通用探测器、两个特殊平台
 providers.js        纯函数：从已合成的 Loader 行里发现供应商
 bindings.js         纯函数：探测结果的持久绑定（读、写、归一化 API 根）
@@ -256,14 +271,14 @@ cordis.patch.yml    只 insert 本包自己的一行（不覆盖别人的行，�
 locale/{zh,en}.json 插件页的标题与描述
 dev/smoke.mjs       离线冒烟：mock HTTP + 真实模块 + 物化 client.js 渲染
 dev/validate.mjs    清单契约：exports / patch 方言 / 两端 Remote 契约 / 槽位 / 词典
-dev/preview.mjs     把设置页与看板页渲染成静态 HTML（含三种测试连接状态）
+dev/preview.mjs     把设置页与浮窗渲染成静态 HTML（含侧栏底部排布、三种测试连接状态）
 ```
 
 宿主与浏览器之间只有两条通路，都在 Host 侧发起请求：
 
 | Remote 方法 | 谁调 | 作用 |
 |---|---|---|
-| `quotaBoard.load(force)` | 看板页面、配置页的发现列表 | 整块看板；20 秒缓存 + in-flight 去重 |
+| `quotaBoard.load(force)` | 浮窗、配置页的发现列表 | 整块看板；20 秒缓存 + in-flight 去重 |
 | `quotaBoard.test(entry)` | 配置页的「测试连接」 | 单条**未保存**条目的试打；不缓存、不写绑定 |
 
 看板不直连供应商接口 —— 跨域、签名、密钥都不该发生在渲染进程里。
@@ -288,14 +303,15 @@ dev/preview.mjs     把设置页与看板页渲染成静态 HTML（含三种测�
 
 ```bash
 npm install          # 只为 dev/ 里的两个脚本：js-yaml、@deepseek-ai/schemastery
-node dev/smoke.mjs   # 75 项：路由、通用探测、绑定、账号钱包、测试连接、形状识别、发现、用量聚合、页面与表单渲染
+node dev/smoke.mjs   # 76 项：路由、通用探测、绑定、账号钱包、测试连接、形状识别、发现、用量聚合、浮窗开合与表单渲染
 node dev/validate.mjs # 43 项：清单、patch、Remote 契约、槽位、词典、账号钱包
-node dev/preview.mjs  # 生成 dev/preview-config.html 与 dev/preview-board.html：设置页与看板页的真实渲染结果（含测试连接的三种状态）
+node dev/preview.mjs  # 生成 dev/preview-config.html 与 dev/preview-board.html：设置页与浮窗的真实渲染结果
 ```
 
 `smoke.mjs` 会起一个本地 mock HTTP 服务，把真实模块跑一遍，再把 `client.js` 物化到 VM 里、
-用桩 React 真渲染整页 —— 因为「组件抛错」在 Harness 里的表现是**整块槽位静默空白**，
-不跑一遍根本发现不了。
+用桩 React 真渲染 —— 因为「组件抛错」在 Harness 里的表现是**整块槽位静默空白**，
+不跑一遍根本发现不了。桩 React 会按点击重放一次渲染，所以「点开浮窗 / `Esc` 关掉」
+这类状态切换也在断言范围里。
 
 ## 许可
 
