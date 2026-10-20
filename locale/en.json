@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Provider quota board",
+    "description": "Balances, plan windows and local token usage for every model provider in the profile: DeepSeek balance, OpenAI-compatible gateway usage, Volcengine plans and resource packages."
+  }
+}

@@ -1,0 +1,32 @@
+# Bundle patch for dsh-quota-board.
+#
+# This bundle owns exactly one row, so it goes under `insert:`. It overrides no
+# row declared by another bundle — a dashboard is a reader, not a seam — which
+# keeps uninstall trivial: the contributed row disappears with the layer.
+#
+# The row's `config` is the surface the settings form edits, so every field of
+# the plugin's Config schema appears here with its default. `providers` is an
+# empty list on purpose: discovery already reads the profile's own `llm-pi-ai`
+# rows, and this field only adds or overrides what the profile never declared.
+# One entry looks like:
+#
+#   providers:
+#     - id: my-gw
+#       displayName: 我的网关
+#       baseURL: https://gw.example.com/v1
+#       apiKeyEnv: MY_GW_KEY
+#       # Volcengine only: the account pair belongs to the entry, not the plugin.
+#       # accessKeyEnv: VOLC_ACCESS_KEY_2
+#       # secretKeyEnv: VOLC_SECRET_KEY_2
+
+- insert:
+    - id: quota-board
+      name: dsh-quota-board
+      config:
+        providers: []
+        lowThreshold: 5
+        refreshSeconds: 60
+        usageDays: 14
+        timeoutMs: 10000
+        deepseekBaseURL: ''
+        skipHosts: ''

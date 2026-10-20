@@ -1,0 +1,97 @@
+{
+  "name": "dsh-quota-board",
+  "version": "0.1.0",
+  "description": "A model-provider quota board for DeepSeek Harness: balances, plan windows and local token usage for every provider in the profile.",
+  "license": "MIT",
+  "author": "Anixuil",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Anixuil/dsh-quota-board.git"
+  },
+  "homepage": "https://github.com/Anixuil/dsh-quota-board#readme",
+  "bugs": {
+    "url": "https://github.com/Anixuil/dsh-quota-board/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-credentials": "*",
+    "@deepseek-ai/dsh-launch-environment": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-credentials": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-launch-environment": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    }
+  },
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node dev/smoke.mjs && node dev/validate.mjs",
+    "smoke": "node dev/smoke.mjs",
+    "validate": "node dev/validate.mjs",
+    "preview": "node dev/preview.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "icon": "./icon.svg",
+  "files": [
+    "index.js",
+    "client.js",
+    "adapters.js",
+    "providers.js",
+    "usage.js",
+    "bindings.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "quota",
+    "balance",
+    "usage",
+    "dashboard",
+    "volcengine",
+    "deepseek"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5",
+    "js-yaml": "^5.5.0"
+  }
+}

@@ -1,0 +1,17 @@
+# 本地开发依赖：跑 dev/ 下的验证套件需要，不随插件分发
+node_modules/
+
+# 预览产物：由 `npm run preview` 生成，内容随时可重建
+dev/preview-config.html
+dev/preview-board.html
+dev/*.png
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+
+# WorkBuddy 的本地记忆，不属于插件本身
+.workbuddy/

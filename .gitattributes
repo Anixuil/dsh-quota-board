@@ -1,0 +1,8 @@
+# 仓库统一用 LF：Windows 上 core.autocrlf 会把检出改成 CRLF，
+# 造成跨平台 diff 噪音。JS/YAML/JSON 全部按 LF 存取。
+* text=auto eol=lf
+
+# 二进制文件不要做行尾转换
+*.svg binary
+*.png binary
+*.ico binary
