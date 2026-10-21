@@ -180,12 +180,22 @@ providers:
 
 ## 装
 
-**桌面端面板**：侧栏「插件」→「+ 添加插件」→ 填 `github:Anixuil/dsh-quota-board` → 安装 → 立即启用 → 重启 Harness。
+**桌面端面板**：侧栏「插件」→「+ 添加插件」→ 输入框填下面任意一种 → 安装 → 立即启用 → 重启 Harness。
+
+| 输入 | 效果 |
+|---|---|
+| `github:Anixuil/dsh-quota-board` | 装 GitHub main 的当前代码；插件升级要卸载重装 |
+| `git+https://github.com/Anixuil/dsh-quota-board.git#v0.1.0` | 钉在某个 tag，不跟 main 变 |
+| `dsh-quota-board`（发布到 npm 后） | 走 npm 版本管理，`@0.1.0` 可固定版本 |
+
+装完**重启 Harness**（bundle 类插件不热加载）。
+安装时出现 `[WARN] Issues with peer dependencies found` 可忽略：peerDependencies 指向
+Harness 自身的 `@deepseek-ai/*`，它们不发布到 npm，dsh 官方插件也一样。
 
 **本地开发**：同一栏填本目录的绝对路径（例如 `D:\code\self\all\dsh-quota-board`）。
 pnpm 记成 `link:`，此后改 `index.js` / `client.js` 只要重启 Harness 就生效。
-
-装完**重启 Harness**（bundle 类插件不热加载）。
+注意 link 和实体安装互斥：换回对话框安装前，先删掉 profile `node_modules` 里的链接，
+否则 pnpm 的「解压 → rename 覆盖」在 Windows 上会报 `ERR_PNPM_EPERM`。
 
 ## 看板在哪
 
