@@ -1206,8 +1206,22 @@ const reportFixture = (() => {
 })()
 
 const registrations = []
+/**
+ * Forwarded Host events, as the real Gateway serves them: `$on` hands back a
+ * disposer per listener, and a disposed listener must never fire again.
+ */
+const forwarded = []
 const fakeCtx = {
-  remote: { $mount: () => Promise.resolve(() => {}) },
+  remote: {
+    $mount: () => Promise.resolve(() => {}),
+    $on: (event, listener) => {
+      const entry = { event, listener, live: true }
+      forwarded.push(entry)
+      return () => {
+        entry.live = false
+      }
+    },
+  },
   get: () => undefined,
   effect: (fn) => {
     const disposer = fn()
@@ -1241,6 +1255,21 @@ const zh = materialized.dictionaries.zh
 const t = (key) => (zh[key] === undefined ? key : zh[key])
 
 const seatComponent = registrations.find((entry) => entry.options.name === 'sidebar.footer.action').component
+const seatOptions = registrations.find((entry) => entry.options.name === 'sidebar.footer.action').options
+
+/** Deliver one forwarded Host event the way the Gateway's pump would. */
+const fireRemote = (event, ...args) => {
+  for (const entry of forwarded) {
+    if (entry.live === true && entry.event === event) entry.listener(...args)
+  }
+}
+/** One finished turn: the Host reports running, then not running. */
+const finishTurn = (sessionId) => {
+  fireRemote('api-session/status', sessionId, true)
+  fireRemote('api-session/status', sessionId, false)
+}
+/** Let the seat's load promise chain settle. */
+const settle = () => new Promise((resolve) => setImmediate(resolve))
 
 /**
  * Render the popover exactly as it looks one click after mount.
@@ -1384,6 +1413,101 @@ check('a configured provider wins, a stale id falls back, no data keeps the titl
   assert.match(mount(null), /额度看板/, 'with nothing loaded the button falls back to the plugin name')
   react.dispose()
 })
+
+/**
+ * A closed seat has to keep up on its own. The trigger is the Host's forwarded
+ * `api-session/status` event — the same edge the session list paints as a busy
+ * dot — so these tests drive that stream instead of waiting for a timer.
+ */
+async function mountSeatForTurnEnd(load) {
+  const props = { t, load, onTurnEnd: seatOptions.inject().onTurnEnd, openConfig: () => {}, wide: true }
+  react.reset([])
+  seatComponent(props)
+  react.flush()
+  await settle()
+}
+
+await checkAsync('a finished turn re-reads the board while the panel stays closed', async () => {
+  const calls = []
+  await mountSeatForTurnEnd((force) => {
+    calls.push(force === true)
+    return Promise.resolve({ ok: true, data: reportFixture })
+  })
+  assert.deepEqual(calls, [false], 'the mount read is not forced: the Host cache is fine there')
+
+  finishTurn('session-1')
+  await settle()
+  assert.deepEqual(calls, [false, true], 'a finished turn must bypass the 20s cache, or it reads the pre-turn number')
+
+  // Unmounting must release the feed, or every removed seat keeps fetching.
+  react.dispose()
+  finishTurn('session-1')
+  await settle()
+  assert.equal(calls.length, 2, 'a disposed seat must stop listening')
+})
+
+await checkAsync('a status baseline is not a finished turn', async () => {
+  const calls = []
+  await mountSeatForTurnEnd((force) => {
+    calls.push(force === true)
+    return Promise.resolve({ ok: true, data: reportFixture })
+  })
+
+  // `false` for a session this page never saw running: a list baseline, not a
+  // turn. Refreshing on those would re-query every provider on each page load.
+  fireRemote('api-session/status', 'idle-session', false)
+  await settle()
+  assert.deepEqual(calls, [false])
+  react.dispose()
+})
+
+await checkAsync('turns finishing during one fetch collapse into a single follow-up', async () => {
+  const calls = []
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  await mountSeatForTurnEnd((force) => {
+    calls.push(force === true)
+    // The first read stays open so both turns land mid-flight.
+    if (calls.length === 1) return gate.then(() => ({ ok: true, data: reportFixture }))
+    return Promise.resolve({ ok: true, data: reportFixture })
+  })
+
+  finishTurn('a')
+  finishTurn('b')
+  release()
+  await settle()
+  await settle()
+  assert.deepEqual(calls, [false, true], 'two notifications, one follow-up read')
+  react.dispose()
+})
+
+await checkAsync('the finished turn lands in the button, not just in the panel', async () => {
+  // The headline prints what is left, derived from `used`: 88 consumed is 12%.
+  const after = { ...reportFixture, providers: reportFixture.providers.map((provider) => ({
+    ...provider,
+    plans: provider.plans.map((plan) => ({ ...plan, used: 88, remaining: 12 })),
+  })) }
+  const props = {
+    t,
+    load: () => Promise.resolve({ ok: true, data: after }),
+    onTurnEnd: seatOptions.inject().onTurnEnd,
+    openConfig: () => {},
+    wide: true,
+  }
+  react.reset([false, null, null, false, null])
+  seatComponent(props)
+  react.flush()
+  await settle()
+
+  finishTurn('session-2')
+  await settle()
+  react.rerender()
+  assert.match(textOf(seatComponent(props)), /12%/, 'the closed button must print the post-turn quota')
+  react.dispose()
+})
+
 
 check('a healthy quota bar is DeepSeek blue, not the theme green', () => {
   const fills = elementsOf(renderPage([reportFixture, null, false])).filter(

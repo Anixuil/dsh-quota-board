@@ -478,6 +478,25 @@ assert.ok(
 )
 ok('看板只有一个入口：侧栏底部席位 + portal 浮窗')
 
+// A board that only reads on open is a stale board: the wallet and the local
+// token counters both move when a turn ends. The trigger is the Host's own
+// forwarded `api-session/status` event — polling for it instead would defeat
+// the "no provider traffic while idle" rule, and guessing from token counts
+// would miss a turn that ends without new usage.
+assert.ok(
+  /function\s+watchTurnEnd\s*\(/u.test(clientSrc),
+  '客户端必须订阅对话结束事件（watchTurnEnd），否则额度只在打开浮窗时更新',
+)
+assert.ok(
+  /\$on\?\.\(\s*'api-session\/status'/u.test(clientSrc),
+  '对话结束的信号是 ctx.remote.$on(\'api-session/status\')：running 由 true 变 false 即一轮结束',
+)
+assert.ok(
+  /onTurnEnd/u.test(clientSrc) && /inject:\s*\(\)\s*=>\s*\(\{[\s\S]{0,160}onTurnEnd/u.test(clientSrc),
+  '席位必须通过 inject 拿到 onTurnEnd，否则插件级的订阅没有读者',
+)
+ok('对话结束会触发一次强制重读（侧栏按钮与浮窗同步更新）')
+
 // Two registrations of the same (slot, key) silently replace each other.
 const registrations = [...clientSrc.matchAll(/ctx\.slots\.register\(\s*\{([^}]*)\}/gu)].map((match) => match[1])
 // Two literal call sites: the footer seat and the shared `mountForm` template.

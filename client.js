@@ -1,16 +1,21 @@
 /**
  * dsh-quota-board — browser half.
  *
- * Three surfaces, all registered from this one module:
+ * Two surfaces, both registered from this one module:
  *
- *   main            a full page in the centre column, opened from the sidebar
- *   sidebar.panellist  the sidebar entry that opens that page
- *   plugins.*       the settings form (bundle page, plugin card, row detail)
+ *   sidebar.footer.action  the seat above the account row: a button that prints
+ *                          the chosen provider's remaining quota and a popover
+ *                          holding the whole board
+ *   plugins.*              the settings form (bundle page, plugin card, row detail)
  *
- * The page renders provider balances and local token usage. Everything it shows
+ * The board renders provider balances and local token usage. Everything it shows
  * comes from the Host through one Remote method (`quotaBoard.load`), because
  * provider billing endpoints are cross-origin, several are signed, and the
- * credentials never reach the browser.
+ * credentials never reach the browser. Reads are as lazy as the product allows:
+ * one on mount, one per panel open, one per poll while the panel is visible, and
+ * one forced read for every conversation turn that ends — the Host's forwarded
+ * `api-session/status` event is the trigger, so a closed panel still shows the
+ * balance the last turn actually left behind.
  *
  * Styles use only `--dsw-alias-*` theme tokens so light and dark both work, and
  * the dashboard markup is plain HTML rather than Harness primitives: a component
@@ -881,6 +886,48 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Run `notify` once per finished conversation turn.
+     *
+     * `api-session/status` is the Host's own "this Agent started/stopped
+     * working" notification — the same edge the session list paints as a busy
+     * dot — so it is the exact moment a turn ends, with no polling and no
+     * guessing from token counts. The `true` half is what makes the `false`
+     * half meaningful: a `false` for a session this page never saw running is a
+     * list baseline, and refreshing on those would fire every provider query
+     * again on each page load.
+     *
+     * @param notify - called with the session id whose turn just ended.
+     * @returns a disposer; a build that cannot forward events yields a no-op.
+     */
+    function watchTurnEnd(ctx, notify) {
+      const running = new Set()
+      let off
+      try {
+        // `$on` throws when the carrier has no forwarded-event stream (a build
+        // with interactions turned off), so the subscription itself is guarded.
+        off = ctx.remote?.$on?.('api-session/status', (sessionId, isRunning) => {
+          const id = String(sessionId ?? '')
+          if (id.length === 0) return
+          if (isRunning === true) {
+            running.add(id)
+            return
+          }
+          if (running.delete(id) !== true) return
+          notify(id)
+        })
+      } catch {
+        return () => {}
+      }
+      return () => {
+        try {
+          off?.()
+        } catch {
+          /* the fiber that owned the listener is already gone */
+        }
+      }
+    }
+
+    /**
      * Probe one unsaved provider entry.
      *
      * Same envelope as `loadBoard`, but a refusal has one more layer: the Host
@@ -1576,8 +1623,9 @@ window.__ModuleLoader__.load({
      *
      * This is a seat rather than a page on purpose — the board should be one
      * click away without leaving the conversation, so the panel floats above the
-     * button and closes on outside click or Escape. The board only polls while
-     * it is open.
+     * button and closes on outside click or Escape. It polls only while it is
+     * open, plus one forced read for every finished conversation turn, so idle
+     * time costs no provider traffic at all.
      */
     function QuotaBoardSeat(props) {
       const t = props.t
@@ -1597,8 +1645,15 @@ window.__ModuleLoader__.load({
       // a ref instead, keeping `refresh` stable for the life of the seat.
       const loadRef = React.useRef(props.load)
       loadRef.current = props.load
+      // Turns finish while a fetch is still running often enough to matter
+      // (subagent sessions end in bursts). One load at a time, and a turn that
+      // lands mid-flight only marks the report stale: the settle below then
+      // runs exactly one follow-up instead of one per notification.
+      const inflight = React.useRef(false)
+      const stale = React.useRef(false)
 
       const refresh = React.useCallback((force) => {
+        inflight.current = true
         setBusy(true)
         return Promise.resolve()
           .then(() => loadRef.current(force === true))
@@ -1616,9 +1671,49 @@ window.__ModuleLoader__.load({
             if (alive.current) setFailure({ reason: String(error?.message ?? error) })
           })
           .then(() => {
-            if (alive.current) setBusy(false)
+            inflight.current = false
+            if (!alive.current) return
+            setBusy(false)
+            if (stale.current) {
+              stale.current = false
+              refresh(true)
+            }
           })
       }, [])
+
+      // A finished turn moves both the wallet and the local token counters, so
+      // the report is re-read once it happens rather than when someone opens
+      // the panel. Forced on purpose: the Host caches for 20s, and a cached
+      // report taken *before* the turn is exactly the stale number this is
+      // here to avoid.
+      const onTurnEnd = React.useCallback(() => {
+        if (inflight.current) {
+          stale.current = true
+          return
+        }
+        refresh(true)
+      }, [refresh])
+
+      const subscribeRef = React.useRef(props.onTurnEnd)
+      subscribeRef.current = props.onTurnEnd
+
+      React.useEffect(() => {
+        const subscribe = subscribeRef.current
+        if (typeof subscribe !== 'function') return undefined
+        let off
+        try {
+          off = subscribe(onTurnEnd)
+        } catch {
+          off = undefined
+        }
+        return () => {
+          try {
+            off?.()
+          } catch {
+            /* already released with the feed */
+          }
+        }
+      }, [onTurnEnd])
 
       React.useEffect(() => {
         alive.current = true
@@ -1634,7 +1729,9 @@ window.__ModuleLoader__.load({
         refresh(false)
       }, [refresh])
 
-      // Fetch on open, then keep it fresh only while it is visible.
+      // Fetch on open, then keep it fresh only while it is visible. A turn
+      // ending refreshes it too, so a closed panel is never more than one turn
+      // behind — see `watchTurnEnd`.
       React.useEffect(() => {
         if (!open) return undefined
         refresh(!seenReport.current)
@@ -2721,6 +2818,33 @@ window.__ModuleLoader__.load({
 
       mountService(ctx)
 
+      /**
+       * The seat is a reader of the turn-end feed, not its owner: the feed
+       * lives at plugin scope so a remounted sidebar (a collapsed rail, a
+       * re-render from the shell) cannot take it away. Listeners are kept in a
+       * set for the same reason — whichever seat is currently mounted holds one.
+       */
+      const turnEndListeners = new Set()
+      const onTurnEnd = (listener) => {
+        if (typeof listener !== 'function') return () => {}
+        turnEndListeners.add(listener)
+        return () => {
+          turnEndListeners.delete(listener)
+        }
+      }
+      const stopTurnEvents = watchTurnEnd(ctx, (sessionId) => {
+        for (const listener of [...turnEndListeners]) {
+          try {
+            listener(sessionId)
+          } catch (error) {
+            // A listener that throws must not silence the others, and must not
+            // escape into the Gateway's event pump.
+            console.warn(`[dsh-quota-board] 对话结束后的刷新失败：${describeFailure(error)}`)
+          }
+        }
+      })
+      ctx.effect(() => () => stopTurnEvents(), 'dsh-quota-board: turn-end subscription')
+
       // One seat in the sidebar footer, directly above the account row: the
       // board opens as a popover from there, so reading a balance never costs
       // the conversation you were in.
@@ -2733,6 +2857,7 @@ window.__ModuleLoader__.load({
             locale: NS,
             inject: () => ({
               load: (force) => loadBoard(ctx, force),
+              onTurnEnd,
               openConfig,
             }),
           },
